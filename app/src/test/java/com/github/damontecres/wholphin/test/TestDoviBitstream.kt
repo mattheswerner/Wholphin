@@ -5,6 +5,7 @@ import com.github.damontecres.wholphin.util.dovi.NAL_UNIT_TYPE_RPU
 import com.github.damontecres.wholphin.util.dovi.describeNalUnitCounts
 import com.github.damontecres.wholphin.util.dovi.doviProfile7ToProfile8
 import com.github.damontecres.wholphin.util.dovi.dropNalUnits
+import com.github.damontecres.wholphin.util.dovi.findRpuInBlockAdditional
 import com.github.damontecres.wholphin.util.dovi.forEachNalUnit
 import com.github.damontecres.wholphin.util.dovi.nalUnitTypeCounts
 import org.junit.Assert
@@ -163,6 +164,53 @@ class TestDoviBitstream {
         val data = ByteArray(32) { 0x42 }
         Assert.assertEquals(data.size, dropNalUnits(data, data.size) { true })
         Assert.assertTrue(typesOf(data).isEmpty())
+    }
+
+    @Test
+    fun theRpuIsFoundAmongTheLengthPrefixedUnitsOfABlockAddition() {
+        // A block addition frames its NAL units with the track's length field, not with start codes
+        val el = ByteArray(40) { 0x6C }
+        val rpu = byteArrayOf(((NAL_UNIT_TYPE_RPU shl 1) and 0x7E).toByte(), 0x01, 0x25, 0x00)
+        val elUnit = byteArrayOf(((NAL_UNIT_TYPE_ENHANCEMENT_LAYER shl 1) and 0x7E).toByte(), 0x01) + el
+        val data = lengthPrefixed(4, elUnit) + lengthPrefixed(4, rpu)
+
+        val found = findRpuInBlockAdditional(data, data.size, 4)
+
+        Assert.assertNotNull(found)
+        Assert.assertEquals(rpu.size, found!!.length)
+        Assert.assertArrayEquals(rpu, data.copyOfRange(found.offset, found.offset + found.length))
+    }
+
+    @Test
+    fun blockAdditionsWithOtherLengthFieldSizesAreRead() {
+        val rpu = byteArrayOf(((NAL_UNIT_TYPE_RPU shl 1) and 0x7E).toByte(), 0x01, 0x33)
+        val data = lengthPrefixed(2, rpu)
+
+        val found = findRpuInBlockAdditional(data, data.size, 2)
+
+        Assert.assertEquals(rpu.size, found?.length)
+    }
+
+    @Test
+    fun aBlockAdditionWithNoRpuOrABadFramingYieldsNothing() {
+        val el = byteArrayOf(((NAL_UNIT_TYPE_ENHANCEMENT_LAYER shl 1) and 0x7E).toByte(), 0x01, 0x00)
+        Assert.assertNull(findRpuInBlockAdditional(lengthPrefixed(4, el), 5, 4))
+        // A length running past the end is a framing this cannot read
+        Assert.assertNull(findRpuInBlockAdditional(byteArrayOf(0, 0, 0, 99, 1, 2), 6, 4))
+        Assert.assertNull(findRpuInBlockAdditional(ByteArray(8), 8, 0))
+    }
+
+    private fun lengthPrefixed(
+        fieldSize: Int,
+        unit: ByteArray,
+    ): ByteArray {
+        val prefix = ByteArray(fieldSize)
+        var value = unit.size
+        for (i in fieldSize - 1 downTo 0) {
+            prefix[i] = (value and 0xFF).toByte()
+            value = value shr 8
+        }
+        return prefix + unit
     }
 
     private fun typesOf(data: ByteArray): List<Int> {

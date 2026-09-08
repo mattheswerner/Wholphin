@@ -25,6 +25,8 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ExtractorsFactory
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory
+import androidx.media3.extractor.text.SubtitleParser
 import androidx.media3.session.MediaSession
 import com.github.damontecres.wholphin.mpv.MpvPlayer
 import com.github.damontecres.wholphin.preferences.AppPreferences
@@ -35,6 +37,8 @@ import com.github.damontecres.wholphin.preferences.get
 import com.github.damontecres.wholphin.services.hilt.AuthOkHttpClient
 import com.github.damontecres.wholphin.util.WholphinDispatchers
 import com.github.damontecres.wholphin.util.dovi.DolbyVisionCompatExtractorsFactory
+import com.github.damontecres.wholphin.util.dovi.DoviAssMatroskaExtractor
+import com.github.damontecres.wholphin.util.dovi.DoviMatroskaExtractor
 import com.github.damontecres.wholphin.util.dovi.DoviPlaybackMode
 import com.github.damontecres.wholphin.util.dovi.LibDoviRpuConverter
 import com.github.damontecres.wholphin.util.dovi.resolveDoviPlaybackMode
@@ -139,12 +143,20 @@ class PlayerFactory
                                         .withAssMkvSupport(
                                             assSubtitleParserFactory,
                                             assHandler,
-                                        ).withDoviConversion(doviMode),
+                                        ).withDoviConversion(
+                                            mode = doviMode,
+                                            assHandler = assHandler,
+                                            subtitleParserFactory = assSubtitleParserFactory,
+                                        ),
                                 ).setSubtitleParserFactory(assSubtitleParserFactory)
                             } else {
                                 DefaultMediaSourceFactory(
                                     dataSourceFactory,
-                                    extractorsFactory.withDoviConversion(doviMode),
+                                    extractorsFactory.withDoviConversion(
+                                        mode = doviMode,
+                                        assHandler = null,
+                                        subtitleParserFactory = DefaultSubtitleParserFactory(),
+                                    ),
                                 )
                             }
                         val disableAudioOffload =
@@ -233,12 +245,31 @@ class PlayerFactory
         /**
          * Wraps the factory so that profile 7 Dolby Vision is rewritten as it comes out of the
          * extractor. The wrapper goes outermost, around the ASS support if that is in use.
+         *
+         * A dual layer Matroska remux keeps its enhancement layer and its RPU in block additions,
+         * which media3's Matroska extractor discards and only a subclass can get at, so one is
+         * supplied for the wrapper to put in place of the stock one. Which subclass depends on
+         * whether libass is rendering the subtitles.
          */
-        private fun ExtractorsFactory.withDoviConversion(mode: DoviPlaybackMode): ExtractorsFactory =
+        private fun ExtractorsFactory.withDoviConversion(
+            mode: DoviPlaybackMode,
+            assHandler: AssHandler?,
+            subtitleParserFactory: SubtitleParser.Factory,
+        ): ExtractorsFactory =
             if (mode == DoviPlaybackMode.NATIVE) {
                 this
             } else {
-                DolbyVisionCompatExtractorsFactory(this, mode) { LibDoviRpuConverter.createOrNull() }
+                DolbyVisionCompatExtractorsFactory(
+                    delegate = this,
+                    mode = mode,
+                    createMatroskaExtractor = {
+                        if (assHandler != null) {
+                            DoviAssMatroskaExtractor(subtitleParserFactory, assHandler)
+                        } else {
+                            DoviMatroskaExtractor(subtitleParserFactory)
+                        }
+                    },
+                ) { LibDoviRpuConverter.createOrNull() }
             }
 
         private fun createTrackSelector(

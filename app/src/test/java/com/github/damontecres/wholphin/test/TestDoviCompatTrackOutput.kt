@@ -236,6 +236,27 @@ class TestDoviCompatTrackOutput {
     }
 
     @Test
+    fun anRpuFromABlockAdditionJoinsTheAccessUnit() {
+        val delegate = RecordingTrackOutput()
+        val converter = FakeRpuConverter(profile7Info)
+        val output = converting(delegate, converter)
+
+        output.format(doviFormat("dvhe.07.06"))
+        // A dual layer remux keeps the RPU and the enhancement layer in a block addition, where the
+        // NAL units are length prefixed rather than framed with start codes
+        val rpu = byteArrayOf(((NAL_UNIT_TYPE_RPU shl 1) and 0x7E).toByte(), 0x01, 0x25, 0x00)
+        val blockAddition = byteArrayOf(0, 0, 0, rpu.size.toByte()) + rpu
+        output.onBlockAdditional(4, blockAddition, blockAddition.size)
+
+        val sample = accessUnit(nalUnit(32), nalUnit(19, ByteArray(32) { it.toByte() }))
+        writeSample(output, sample)
+
+        Assert.assertEquals("dvhe.08.06", delegate.format?.codecs)
+        // The converted RPU belongs at the end of the access unit
+        Assert.assertArrayEquals(sample + byteArrayOf(0, 0, 0, 1) + rpu, delegate.samples.single())
+    }
+
+    @Test
     fun anAccessUnitWithNoRpuIsLeftAsItIs() {
         val delegate = RecordingTrackOutput()
         val converter = FakeRpuConverter(profile7Info)

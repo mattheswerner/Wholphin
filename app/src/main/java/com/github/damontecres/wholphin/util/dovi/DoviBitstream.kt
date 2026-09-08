@@ -14,6 +14,12 @@ const val NAL_UNIT_TYPE_ENHANCEMENT_LAYER = 63
 
 private const val DOVI_PROFILE_8 = "08"
 
+/** Where in a buffer a NAL unit sits. */
+data class NalRange(
+    val offset: Int,
+    val length: Int,
+)
+
 /**
  * What to do with a Dolby Vision profile 7 track during playback.
  */

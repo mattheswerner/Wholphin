@@ -17,12 +17,16 @@ import androidx.media3.extractor.ForwardingExtractor
 import androidx.media3.extractor.ForwardingExtractorOutput
 import androidx.media3.extractor.ForwardingExtractorsFactory
 import androidx.media3.extractor.TrackOutput
+import androidx.media3.extractor.mkv.MatroskaExtractor
 import timber.log.Timber
 import java.io.EOFException
 import java.nio.ByteBuffer
 
 private const val INITIAL_SAMPLE_SIZE = 512 * 1024
 private const val TRANSFER_SIZE = 64 * 1024
+
+/** The Annex B start code the extractors frame every NAL unit with. */
+private val NAL_START_CODE = byteArrayOf(0, 0, 0, 1)
 
 /**
  * Spare room for libdovi to work in: a converted RPU can come out a few bytes longer than the one
@@ -55,6 +59,7 @@ private const val CONVERSION_HEADROOM = 16 * 1024
 class DolbyVisionCompatExtractorsFactory(
     delegate: ExtractorsFactory,
     private val mode: DoviPlaybackMode,
+    private val createMatroskaExtractor: (() -> Extractor)?,
     private val createConverter: () -> DoviRpuConverter?,
 ) : ForwardingExtractorsFactory(delegate) {
     override fun createExtractors(): Array<Extractor> = wrap(super.createExtractors())
@@ -65,19 +70,33 @@ class DolbyVisionCompatExtractorsFactory(
     ): Array<Extractor> = wrap(super.createExtractors(uri, responseHeaders))
 
     private fun wrap(extractors: Array<Extractor>): Array<Extractor> =
-        Array(extractors.size) { DoviCompatExtractor(extractors[it], mode, createConverter) }
+        Array(extractors.size) {
+            // The Matroska extractor is replaced rather than wrapped, because the block additions a
+            // dual layer remux keeps its enhancement layer in are read by a protected method, which
+            // only a subclass can get at. The replacement keeps its place in the sniffing order.
+            val extractor = extractors[it]
+            val replacement =
+                if (extractor is MatroskaExtractor) createMatroskaExtractor?.invoke() else null
+            DoviCompatExtractor(replacement ?: extractor, mode, createConverter)
+        }
 }
 
 private class DoviCompatExtractor(
-    delegate: Extractor,
+    private val underlying: Extractor,
     private val mode: DoviPlaybackMode,
     private val createConverter: () -> DoviRpuConverter?,
-) : ForwardingExtractor(delegate) {
+) : ForwardingExtractor(underlying) {
     private var doviOutput: DoviCompatExtractorOutput? = null
 
     override fun init(output: ExtractorOutput) {
         val wrapped = DoviCompatExtractorOutput(output, mode, createConverter)
         doviOutput = wrapped
+        val listener = DoviBlockAdditionalListener(wrapped::onBlockAdditional)
+        when (underlying) {
+            is DoviMatroskaExtractor -> underlying.doviCapture.listener = listener
+            is DoviAssMatroskaExtractor -> underlying.doviCapture.listener = listener
+            else -> Unit
+        }
         super.init(wrapped)
     }
 
@@ -100,7 +119,7 @@ internal class DoviCompatExtractorOutput(
     private val mode: DoviPlaybackMode,
     private val createConverter: () -> DoviRpuConverter?,
 ) : ForwardingExtractorOutput(delegate) {
-    private val videoTracks = mutableMapOf<Long, DoviCompatTrackOutput>()
+    private val videoTracks = mutableMapOf<Int, DoviCompatTrackOutput>()
 
     override fun track(
         id: Int,
@@ -110,8 +129,21 @@ internal class DoviCompatExtractorOutput(
         if (type != C.TRACK_TYPE_VIDEO) return delegate
         // Extractors are allowed to ask for the same track more than once and expect the same
         // output back, which has to hold for the wrapper too since it carries per track state.
-        val key = (id.toLong() shl 32) or (type.toLong() and 0xFFFFFFFFL)
-        return videoTracks.getOrPut(key) { DoviCompatTrackOutput(delegate, mode, createConverter) }
+        return videoTracks.getOrPut(id) { DoviCompatTrackOutput(delegate, mode, createConverter) }
+    }
+
+    /**
+     * A block addition of a Dolby Vision track, which in a dual layer remux is where the RPU and
+     * the enhancement layer live. Matroska reads these before it announces the sample they belong
+     * to, so the RPU is there in time to join the access unit.
+     */
+    fun onBlockAdditional(
+        trackNumber: Int,
+        nalLengthFieldSize: Int,
+        data: ByteArray,
+        length: Int,
+    ) {
+        videoTracks[trackNumber]?.onBlockAdditional(nalLengthFieldSize, data, length)
     }
 
     fun onSeek() = videoTracks.values.forEach { it.onSeek() }
@@ -166,8 +198,19 @@ internal class DoviCompatTrackOutput(
     private var finished = ByteArray(INITIAL_SAMPLE_SIZE)
     private val finishedWrapper = ParsableByteArray()
 
+    /** The RPU of the block addition belonging to the access unit being assembled, if it had one. */
+    private var pendingRpu = ByteArray(0)
+    private var pendingRpuLength = 0
+
+    /** Holds the RPU on its own as an Annex B frame, which is the shape the converter reads. */
+    private var rpuFrame: ByteBuffer = ByteBuffer.allocateDirect(CONVERSION_HEADROOM)
+
+    /** Whether the RPU arrives in block additions and has to be put into the access unit. */
+    private var injectRpu = false
+
     private var codecsBefore: String? = null
     private var codecsAfter: String? = null
+    private var rpuSource = "none"
     private var samples = 0L
     private var rpusConverted = 0L
     private var rpusDropped = 0L
@@ -308,19 +351,37 @@ internal class DoviCompatTrackOutput(
         if (trailingBytes > 0) append(trailing, 0, trailingBytes)
     }
 
+    /**
+     * Keeps the RPU out of a block addition of the access unit currently being assembled. Matroska
+     * reads block additions before it announces the sample, so it is there when the sample is.
+     */
+    fun onBlockAdditional(
+        nalLengthFieldSize: Int,
+        data: ByteArray,
+        length: Int,
+    ) {
+        if (state == State.INACTIVE || mode != DoviPlaybackMode.CONVERT_TO_PROFILE_8_1) return
+        val rpu = findRpuInBlockAdditional(data, length, nalLengthFieldSize) ?: return
+        if (pendingRpu.size < rpu.length) pendingRpu = ByteArray(rpu.length)
+        System.arraycopy(data, rpu.offset, pendingRpu, 0, rpu.length)
+        pendingRpuLength = rpu.length
+    }
+
     fun onSeek() {
         buffered = 0
+        pendingRpuLength = 0
     }
 
     fun onRelease() {
         if (state == State.INACTIVE || samples == 0L) return
         Timber.i(
-            "Dolby Vision profile 7 track finished as %s: codecs %s to %s, %d access units, " +
-                "%d RPUs converted, %d RPUs dropped, %d enhancement layer bytes dropped, " +
-                "%d bytes in, %d bytes out",
+            "Dolby Vision profile 7 track finished as %s: codecs %s to %s, RPU from %s, " +
+                "%d access units, %d RPUs converted, %d RPUs dropped, " +
+                "%d enhancement layer bytes dropped, %d bytes in, %d bytes out",
             state,
             codecsBefore,
             codecsAfter,
+            rpuSource,
             samples,
             rpusConverted,
             rpusDropped,
@@ -336,7 +397,7 @@ internal class DoviCompatTrackOutput(
     private fun transform(size: Int): Int {
         if (state == State.UNDECIDED) decide(size)
         var length = size
-        if (state == State.CONVERTING) {
+        if (state == State.CONVERTING && !injectRpu) {
             ensureSampleCapacity(size + CONVERSION_HEADROOM)
             val convertedSize = converter?.convertToProfile8(sample, size) ?: -1
             if (convertedSize in 1..sample.capacity()) {
@@ -353,6 +414,8 @@ internal class DoviCompatTrackOutput(
                 val kept = dropNalUnits(finished, length) { it == NAL_UNIT_TYPE_ENHANCEMENT_LAYER }
                 elBytesDropped += length - kept
                 length = kept
+                if (injectRpu) length = injectPendingRpu(length)
+                pendingRpuLength = 0
             }
 
             State.STRIPPING -> {
@@ -380,14 +443,15 @@ internal class DoviCompatTrackOutput(
     private fun decide(size: Int) {
         read(0, finishedOfAtLeast(size), size)
         val counts = nalUnitTypeCounts(finished, size)
-        val info = converter?.frameInfo(sample, size)
+        val inBand = counts[NAL_UNIT_TYPE_RPU] > 0
+        injectRpu = !inBand && pendingRpuLength > 0
+        val info = if (inBand) converter?.frameInfo(sample, size) else pendingRpuFrameInfo()
         state =
             when {
-                counts[NAL_UNIT_TYPE_RPU] == 0 -> {
+                !inBand && pendingRpuLength == 0 -> {
                     Timber.e(
-                        "No Dolby Vision RPU in the first access unit, NAL units %s. The RPU and the " +
-                            "enhancement layer are probably carried in Matroska block additions, which is " +
-                            "not supported, so the video is left unconverted",
+                        "No Dolby Vision RPU in the first access unit and none in a block addition, " +
+                            "NAL units %s, so the video is left unconverted",
                         describeNalUnitCounts(counts),
                     )
                     State.PASSTHROUGH
@@ -412,14 +476,68 @@ internal class DoviCompatTrackOutput(
                 }
 
                 else -> {
+                    rpuSource = if (inBand) "in band" else "block additions"
                     Timber.i(
-                        "Converting Dolby Vision profile 7 %s to profile 8.1, first access unit NAL units %s",
+                        "Converting Dolby Vision profile 7 %s to profile 8.1, RPU from %s, " +
+                            "first access unit NAL units %s",
                         info.elType,
+                        rpuSource,
                         describeNalUnitCounts(counts),
                     )
                     State.CONVERTING
                 }
             }
+    }
+
+    /**
+     * Lays the block addition's RPU out on its own as an Annex B frame, which is the shape the
+     * converter reads, and returns its length.
+     */
+    private fun loadPendingRpuFrame(): Int {
+        val length = NAL_START_CODE.size + pendingRpuLength
+        if (rpuFrame.capacity() < length + CONVERSION_HEADROOM) {
+            rpuFrame = ByteBuffer.allocateDirect(length + CONVERSION_HEADROOM)
+        }
+        rpuFrame.limit(rpuFrame.capacity())
+        rpuFrame.position(0)
+        rpuFrame.put(NAL_START_CODE)
+        rpuFrame.put(pendingRpu, 0, pendingRpuLength)
+        return length
+    }
+
+    private fun pendingRpuFrameInfo(): DoviFrameInfo? {
+        if (pendingRpuLength == 0) return null
+        return converter?.frameInfo(rpuFrame, loadPendingRpuFrame())
+    }
+
+    /**
+     * Converts the block addition's RPU and appends it to the access unit, where an RPU belongs,
+     * returning the new length. An RPU which does not convert is left out rather than added as
+     * profile 7 to a stream announced as profile 8.1.
+     */
+    private fun injectPendingRpu(length: Int): Int {
+        if (pendingRpuLength == 0) {
+            rpusDropped++
+            return length
+        }
+        val loaded = loadPendingRpuFrame()
+        val converted = converter?.convertToProfile8(rpuFrame, loaded) ?: -1
+        if (converted !in 1..rpuFrame.capacity()) {
+            rpusDropped++
+            return length
+        }
+        if (converter?.frameInfo(rpuFrame, converted)?.profile == 7) {
+            rpusDropped++
+            return length
+        }
+        val out = finishedOfAtLeast(length + converted)
+        val reader = rpuFrame.duplicate()
+        reader.limit(reader.capacity())
+        reader.position(0)
+        reader.limit(converted)
+        reader.get(out, length, converted)
+        rpusConverted++
+        return length + converted
     }
 
     /**
