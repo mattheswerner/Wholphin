@@ -48,6 +48,19 @@ enum AssPlaybackMode{
   ASS_TRANSCODE = 2;
 }
 
+// What to do with Dolby Vision profile 7 video, which carries an enhancement layer that
+// devices without a profile 7 decoder cannot use
+enum DoviConversionMode{
+  // Play it as it is, which is what a device with a real profile 7 decoder wants
+  DOVI_CONVERSION_NATIVE = 0;
+  // Pick between the modes below from what the decoders and the display report
+  DOVI_CONVERSION_AUTO = 1;
+  // Convert to profile 8.1, so single layer Dolby Vision devices play it as Dolby Vision
+  DOVI_CONVERSION_PROFILE_8_1 = 2;
+  // Remove the Dolby Vision layer, leaving the HDR10 base layer as plain HEVC
+  DOVI_CONVERSION_HEVC = 3;
+}
+
 message PlaybackOverrides{
   bool ac3_supported = 1;
   bool downmix_stereo = 2;
@@ -57,7 +70,8 @@ message PlaybackOverrides{
   bool direct_play_dolby_vision_e_l = 6;
   bool decode_av1 = 7;
   AssPlaybackMode ass_playback_mode = 8;
-  bool convert_dolby_vision_profile_7 = 9;
+  bool convert_dolby_vision_profile_7 = 9 [deprecated = true];
+  DoviConversionMode dovi_conversion_mode = 10;
 }
 
 message PlaybackPreferences {

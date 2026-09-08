@@ -13,6 +13,7 @@ import androidx.media3.extractor.TrackOutput
 import com.github.damontecres.wholphin.util.dovi.DoviCompatTrackOutput
 import com.github.damontecres.wholphin.util.dovi.DoviElType
 import com.github.damontecres.wholphin.util.dovi.DoviFrameInfo
+import com.github.damontecres.wholphin.util.dovi.DoviPlaybackMode
 import com.github.damontecres.wholphin.util.dovi.DoviRpuConverter
 import com.github.damontecres.wholphin.util.dovi.NAL_UNIT_TYPE_ENHANCEMENT_LAYER
 import com.github.damontecres.wholphin.util.dovi.NAL_UNIT_TYPE_RPU
@@ -84,8 +85,13 @@ private class RecordingTrackOutput : TrackOutput {
     }
 }
 
+/**
+ * Reports [before] until a conversion has run and [after] from then on, which is how libdovi
+ * behaves: an RPU it converted parses as profile 8, one it could not is handed back unchanged.
+ */
 private class FakeRpuConverter(
-    private val info: DoviFrameInfo?,
+    private val before: DoviFrameInfo?,
+    private val after: DoviFrameInfo? = DoviFrameInfo(8, DoviElType.NONE, false),
     private val convert: (ByteBuffer, Int) -> Int = { _, size -> size },
 ) : DoviRpuConverter {
     var conversions = 0
@@ -93,7 +99,7 @@ private class FakeRpuConverter(
     override fun frameInfo(
         frame: ByteBuffer,
         size: Int,
-    ): DoviFrameInfo? = info
+    ): DoviFrameInfo? = if (conversions == 0) before else after
 
     override fun convertToProfile8(
         frame: ByteBuffer,
@@ -109,6 +115,11 @@ private class FakeRpuConverter(
 class TestDoviCompatTrackOutput {
     private val profile7Info = DoviFrameInfo(profile = 7, elType = DoviElType.FEL, hasHdr10Plus = false)
 
+    private fun converting(
+        delegate: TrackOutput,
+        converter: DoviRpuConverter?,
+    ) = DoviCompatTrackOutput(delegate, DoviPlaybackMode.CONVERT_TO_PROFILE_8_1) { converter }
+
     private fun writeSample(
         output: TrackOutput,
         data: ByteArray,
@@ -121,7 +132,7 @@ class TestDoviCompatTrackOutput {
     fun profile7TrackIsRelabelledAndLosesItsEnhancementLayer() {
         val delegate = RecordingTrackOutput()
         val converter = FakeRpuConverter(profile7Info)
-        val output = DoviCompatTrackOutput(delegate) { converter }
+        val output = converting(delegate, converter)
 
         output.format(doviFormat("dvhe.07.06"))
         val sample =
@@ -134,6 +145,7 @@ class TestDoviCompatTrackOutput {
         writeSample(output, sample)
 
         Assert.assertEquals("dvhe.08.06", delegate.format?.codecs)
+        Assert.assertEquals(MimeTypes.VIDEO_DOLBY_VISION, delegate.format?.sampleMimeType)
         Assert.assertEquals(1, converter.conversions)
         val expected =
             accessUnit(
@@ -156,7 +168,7 @@ class TestDoviCompatTrackOutput {
                 frame.put(filler)
                 size + filler.size
             }
-        val output = DoviCompatTrackOutput(delegate) { converter }
+        val output = converting(delegate, converter)
 
         output.format(doviFormat("dvhe.07.06"))
         writeSample(
@@ -175,10 +187,59 @@ class TestDoviCompatTrackOutput {
     }
 
     @Test
+    fun anRpuStillAtProfile7AfterConvertingIsDroppedRatherThanForwarded() {
+        val delegate = RecordingTrackOutput()
+        // libdovi hands back an RPU it could not convert unchanged, so it still reads as profile 7
+        val converter = FakeRpuConverter(profile7Info, after = profile7Info)
+        val output = converting(delegate, converter)
+
+        output.format(doviFormat("dvhe.07.06"))
+        val sample =
+            accessUnit(
+                nalUnit(19),
+                nalUnit(NAL_UNIT_TYPE_RPU),
+                nalUnit(NAL_UNIT_TYPE_ENHANCEMENT_LAYER),
+            )
+        writeSample(output, sample)
+        writeSample(output, sample)
+
+        // Leaving a profile 7 RPU in a stream announced as profile 8.1 is the failure this avoids
+        Assert.assertArrayEquals(nalUnit(19), delegate.samples[0])
+        Assert.assertArrayEquals(nalUnit(19), delegate.samples[1])
+    }
+
+    @Test
+    fun strippingPresentsTheTrackAsPlainHevcWithoutDolbyVisionNalUnits() {
+        val delegate = RecordingTrackOutput()
+        val output =
+            DoviCompatTrackOutput(delegate, DoviPlaybackMode.STRIP_TO_HEVC) {
+                throw AssertionError("stripping must not need libdovi")
+            }
+
+        output.format(doviFormat("dvhe.07.06"))
+        writeSample(
+            output,
+            accessUnit(
+                nalUnit(32),
+                nalUnit(19, ByteArray(24) { 0x5C }),
+                nalUnit(NAL_UNIT_TYPE_RPU),
+                nalUnit(NAL_UNIT_TYPE_ENHANCEMENT_LAYER, ByteArray(64) { 0x1D }),
+            ),
+        )
+
+        Assert.assertEquals(MimeTypes.VIDEO_H265, delegate.format?.sampleMimeType)
+        Assert.assertNull(delegate.format?.codecs)
+        Assert.assertArrayEquals(
+            accessUnit(nalUnit(32), nalUnit(19, ByteArray(24) { 0x5C })),
+            delegate.samples.single(),
+        )
+    }
+
+    @Test
     fun anAccessUnitWithNoRpuIsLeftAsItIs() {
         val delegate = RecordingTrackOutput()
         val converter = FakeRpuConverter(profile7Info)
-        val output = DoviCompatTrackOutput(delegate) { converter }
+        val output = converting(delegate, converter)
 
         output.format(doviFormat("dvhe.07.06"))
         // A dual layer Matroska remux carries the RPU in block additions, so the access unit has none
@@ -194,7 +255,7 @@ class TestDoviCompatTrackOutput {
     @Test
     fun tracksWhichAreNotProfile7AreForwardedUntouched() {
         val delegate = RecordingTrackOutput()
-        val output = DoviCompatTrackOutput(delegate) { throw AssertionError("libdovi must not be loaded") }
+        val output = converting(delegate, null)
 
         output.format(doviFormat("dvhe.08.06"))
         val sample = accessUnit(nalUnit(19), nalUnit(NAL_UNIT_TYPE_RPU))
@@ -207,7 +268,7 @@ class TestDoviCompatTrackOutput {
     @Test
     fun withoutLibdoviTheStreamIsNotTouchedAtAll() {
         val delegate = RecordingTrackOutput()
-        val output = DoviCompatTrackOutput(delegate) { null }
+        val output = converting(delegate, null)
 
         output.format(doviFormat("dvhe.07.06"))
         val sample = accessUnit(nalUnit(19), nalUnit(NAL_UNIT_TYPE_ENHANCEMENT_LAYER))
@@ -221,8 +282,7 @@ class TestDoviCompatTrackOutput {
     @Test
     fun sampleDataArrivingInPiecesIsReassembled() {
         val delegate = RecordingTrackOutput()
-        val converter = FakeRpuConverter(profile7Info)
-        val output = DoviCompatTrackOutput(delegate) { converter }
+        val output = converting(delegate, FakeRpuConverter(profile7Info))
 
         output.format(doviFormat("dvhe.07.06"))
         val head = accessUnit(nalUnit(32), nalUnit(19, ByteArray(40) { it.toByte() }))
@@ -237,8 +297,7 @@ class TestDoviCompatTrackOutput {
     @Test
     fun bytesOfTheNextAccessUnitAreKeptForIt() {
         val delegate = RecordingTrackOutput()
-        val converter = FakeRpuConverter(profile7Info)
-        val output = DoviCompatTrackOutput(delegate) { converter }
+        val output = converting(delegate, FakeRpuConverter(profile7Info))
 
         output.format(doviFormat("dvhe.07.06"))
         val first = accessUnit(nalUnit(19), nalUnit(NAL_UNIT_TYPE_RPU), nalUnit(NAL_UNIT_TYPE_ENHANCEMENT_LAYER))
@@ -254,5 +313,44 @@ class TestDoviCompatTrackOutput {
 
         Assert.assertArrayEquals(accessUnit(nalUnit(19), nalUnit(NAL_UNIT_TYPE_RPU)), delegate.samples[0])
         Assert.assertArrayEquals(second, delegate.samples[1])
+    }
+
+    @Test
+    fun sampleDataOtherThanTheAccessUnitStopsTheRewriting() {
+        val delegate = RecordingTrackOutput()
+        val output = converting(delegate, FakeRpuConverter(profile7Info))
+
+        output.format(doviFormat("dvhe.07.06"))
+        val main = accessUnit(nalUnit(19), nalUnit(NAL_UNIT_TYPE_RPU), nalUnit(NAL_UNIT_TYPE_ENHANCEMENT_LAYER))
+        val supplemental = byteArrayOf(1, 2, 3, 4)
+        output.sampleData(ParsableByteArray(main, main.size), main.size, TrackOutput.SAMPLE_DATA_PART_MAIN)
+        output.sampleData(
+            ParsableByteArray(supplemental, supplemental.size),
+            supplemental.size,
+            TrackOutput.SAMPLE_DATA_PART_SUPPLEMENTAL,
+        )
+        output.sampleMetadata(0L, C.BUFFER_FLAG_KEY_FRAME, main.size + supplemental.size, 0, null)
+
+        // Guessing at that framing would corrupt the sample, so nothing is rewritten
+        Assert.assertArrayEquals(main + supplemental, delegate.samples.single())
+    }
+
+    @Test
+    fun encryptedSamplesAreForwardedUnchanged() {
+        val delegate = RecordingTrackOutput()
+        val output = converting(delegate, FakeRpuConverter(profile7Info))
+
+        output.format(doviFormat("dvhe.07.06"))
+        val sample = accessUnit(nalUnit(19), nalUnit(NAL_UNIT_TYPE_RPU), nalUnit(NAL_UNIT_TYPE_ENHANCEMENT_LAYER))
+        output.sampleData(ParsableByteArray(sample, sample.size), sample.size, TrackOutput.SAMPLE_DATA_PART_MAIN)
+        output.sampleMetadata(
+            0L,
+            C.BUFFER_FLAG_KEY_FRAME,
+            sample.size,
+            0,
+            TrackOutput.CryptoData(C.CRYPTO_MODE_AES_CTR, ByteArray(16), 0, 0),
+        )
+
+        Assert.assertArrayEquals(sample, delegate.samples.single())
     }
 }

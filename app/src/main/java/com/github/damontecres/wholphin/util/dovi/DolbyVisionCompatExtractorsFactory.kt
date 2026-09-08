@@ -31,15 +31,19 @@ private const val TRANSFER_SIZE = 64 * 1024
 private const val CONVERSION_HEADROOM = 16 * 1024
 
 /**
- * Converts Dolby Vision profile 7 video to profile 8.1 as it comes out of the extractor, so that
- * devices which only decode single layer Dolby Vision play it as Dolby Vision instead of falling
- * back to the HDR10 base layer.
+ * Rewrites Dolby Vision profile 7 video as it comes out of the extractor, so that a device which
+ * cannot use the enhancement layer still gets a stream it plays correctly.
  *
- * Two edits make up the conversion, and both are needed. The RPU, the NAL unit of type 62, is
- * rewritten into its profile 8.1 form by libdovi, and the enhancement layer, the NAL units of type
- * 63, is dropped, because a profile 8 decoder handed a two layer stream still decodes only the base
- * layer. On top of that the codec string of the track is rewritten from `dvhe.07` to `dvhe.08`,
- * which is what decides which decoder media3 picks and which profile it configures it with.
+ * In [DoviPlaybackMode.CONVERT_TO_PROFILE_8_1] three things happen, and all three are needed. The
+ * RPU, the NAL unit of type 62, is rewritten to its profile 8.1 form by libdovi. The enhancement
+ * layer, the NAL units of type 63, is dropped, because a profile 8 decoder handed a two layer
+ * stream still decodes only the base layer. And the codec string is rewritten from `dvhe.07` to
+ * `dvhe.08`, which is what decides which decoder media3 picks and which profile it configures it
+ * with.
+ *
+ * In [DoviPlaybackMode.STRIP_TO_HEVC] the RPU and the enhancement layer are both dropped and the
+ * track is presented as plain HEVC, leaving the HDR10 base layer. That needs no libdovi at all, and
+ * is what a display without Dolby Vision wants.
  *
  * This sits at the extractor rather than at the decoder because the codec string has to be right
  * before a decoder is chosen. Nothing is re-encoded, and the server does no work.
@@ -50,6 +54,7 @@ private const val CONVERSION_HEADROOM = 16 * 1024
  */
 class DolbyVisionCompatExtractorsFactory(
     delegate: ExtractorsFactory,
+    private val mode: DoviPlaybackMode,
     private val createConverter: () -> DoviRpuConverter?,
 ) : ForwardingExtractorsFactory(delegate) {
     override fun createExtractors(): Array<Extractor> = wrap(super.createExtractors())
@@ -60,17 +65,18 @@ class DolbyVisionCompatExtractorsFactory(
     ): Array<Extractor> = wrap(super.createExtractors(uri, responseHeaders))
 
     private fun wrap(extractors: Array<Extractor>): Array<Extractor> =
-        Array(extractors.size) { DoviCompatExtractor(extractors[it], createConverter) }
+        Array(extractors.size) { DoviCompatExtractor(extractors[it], mode, createConverter) }
 }
 
 private class DoviCompatExtractor(
     delegate: Extractor,
+    private val mode: DoviPlaybackMode,
     private val createConverter: () -> DoviRpuConverter?,
 ) : ForwardingExtractor(delegate) {
     private var doviOutput: DoviCompatExtractorOutput? = null
 
     override fun init(output: ExtractorOutput) {
-        val wrapped = DoviCompatExtractorOutput(output, createConverter)
+        val wrapped = DoviCompatExtractorOutput(output, mode, createConverter)
         doviOutput = wrapped
         super.init(wrapped)
     }
@@ -91,6 +97,7 @@ private class DoviCompatExtractor(
 
 internal class DoviCompatExtractorOutput(
     delegate: ExtractorOutput,
+    private val mode: DoviPlaybackMode,
     private val createConverter: () -> DoviRpuConverter?,
 ) : ForwardingExtractorOutput(delegate) {
     private val videoTracks = mutableMapOf<Long, DoviCompatTrackOutput>()
@@ -104,7 +111,7 @@ internal class DoviCompatExtractorOutput(
         // Extractors are allowed to ask for the same track more than once and expect the same
         // output back, which has to hold for the wrapper too since it carries per track state.
         val key = (id.toLong() shl 32) or (type.toLong() and 0xFFFFFFFFL)
-        return videoTracks.getOrPut(key) { DoviCompatTrackOutput(delegate, createConverter) }
+        return videoTracks.getOrPut(key) { DoviCompatTrackOutput(delegate, mode, createConverter) }
     }
 
     fun onSeek() = videoTracks.values.forEach { it.onSeek() }
@@ -113,8 +120,8 @@ internal class DoviCompatExtractorOutput(
 }
 
 /**
- * Assembles each access unit of a Dolby Vision track, converts it, and hands the result to the
- * real track output. Tracks which are not profile 7 Dolby Vision are forwarded untouched.
+ * Assembles each access unit of a Dolby Vision track, rewrites it, and hands the result to the real
+ * track output. Tracks which are not profile 7 Dolby Vision are forwarded untouched.
  *
  * [androidx.media3.extractor.ForwardingTrackOutput] is not usable here: its convenience
  * `sampleData` overloads forward to the delegate rather than to itself, and those are the ones the
@@ -122,10 +129,11 @@ internal class DoviCompatExtractorOutput(
  */
 internal class DoviCompatTrackOutput(
     private val delegate: TrackOutput,
+    private val mode: DoviPlaybackMode,
     private val createConverter: () -> DoviRpuConverter?,
 ) : TrackOutput {
     private enum class State {
-        /** Not a profile 7 Dolby Vision track, or no libdovi: everything is forwarded as it is. */
+        /** Not a profile 7 Dolby Vision track, or nothing to convert with: forwarded as it is. */
         INACTIVE,
 
         /** A profile 7 track whose first access unit has not been looked at yet. */
@@ -134,7 +142,10 @@ internal class DoviCompatTrackOutput(
         /** Converting the RPU and dropping the enhancement layer. */
         CONVERTING,
 
-        /** A profile 7 track which cannot be converted; access units are forwarded unchanged. */
+        /** Dropping the RPU and the enhancement layer. */
+        STRIPPING,
+
+        /** A profile 7 track which cannot be rewritten; access units are forwarded unchanged. */
         PASSTHROUGH,
     }
 
@@ -159,10 +170,11 @@ internal class DoviCompatTrackOutput(
     private var codecsAfter: String? = null
     private var samples = 0L
     private var rpusConverted = 0L
-    private var rpusFailed = 0L
+    private var rpusDropped = 0L
     private var elBytesDropped = 0L
     private var bytesIn = 0L
     private var bytesOut = 0L
+    private var conversionVerified = false
 
     override fun format(format: Format) {
         val profile8Codecs =
@@ -176,22 +188,47 @@ internal class DoviCompatTrackOutput(
             delegate.format(format)
             return
         }
-        val rpuConverter = converter ?: createConverter().also { converter = it }
-        if (rpuConverter == null) {
-            state = State.INACTIVE
-            delegate.format(format)
-            return
-        }
-        state = State.UNDECIDED
-        buffered = 0
         codecsBefore = format.codecs
-        codecsAfter = profile8Codecs
-        Timber.i(
-            "Dolby Vision profile 7 video track, rewriting the codec string %s to %s",
-            format.codecs,
-            profile8Codecs,
-        )
-        delegate.format(format.buildUpon().setCodecs(profile8Codecs).build())
+        buffered = 0
+        when (mode) {
+            DoviPlaybackMode.STRIP_TO_HEVC -> {
+                // Dropping the Dolby Vision layer needs no RPU parsing, so no native library either
+                state = State.STRIPPING
+                codecsAfter = null
+                Timber.i("Dolby Vision profile 7 video track, stripping it to plain HEVC")
+                delegate.format(
+                    format
+                        .buildUpon()
+                        .setSampleMimeType(MimeTypes.VIDEO_H265)
+                        .setCodecs(null)
+                        .build(),
+                )
+            }
+
+            DoviPlaybackMode.CONVERT_TO_PROFILE_8_1 -> {
+                val rpuConverter = converter ?: createConverter().also { converter = it }
+                if (rpuConverter == null) {
+                    // Relabelling a stream nothing can convert would only mislead the decoder
+                    state = State.INACTIVE
+                    Timber.w("No libdovi, leaving the Dolby Vision profile 7 track as it is")
+                    delegate.format(format)
+                    return
+                }
+                state = State.UNDECIDED
+                codecsAfter = profile8Codecs
+                Timber.i(
+                    "Dolby Vision profile 7 video track, rewriting the codec string %s to %s",
+                    format.codecs,
+                    profile8Codecs,
+                )
+                delegate.format(format.buildUpon().setCodecs(profile8Codecs).build())
+            }
+
+            DoviPlaybackMode.NATIVE -> {
+                state = State.INACTIVE
+                delegate.format(format)
+            }
+        }
     }
 
     override fun durationUs(durationUs: Long) = delegate.durationUs(durationUs)
@@ -202,7 +239,11 @@ internal class DoviCompatTrackOutput(
         allowEndOfInput: Boolean,
         sampleDataPart: Int,
     ): Int {
-        if (state == State.INACTIVE || sampleDataPart != TrackOutput.SAMPLE_DATA_PART_MAIN) {
+        if (state == State.INACTIVE) {
+            return delegate.sampleData(input, length, allowEndOfInput, sampleDataPart)
+        }
+        if (sampleDataPart != TrackOutput.SAMPLE_DATA_PART_MAIN) {
+            giveUpOnPart(sampleDataPart)
             return delegate.sampleData(input, length, allowEndOfInput, sampleDataPart)
         }
         if (transfer.size < length) transfer = ByteArray(length)
@@ -220,7 +261,12 @@ internal class DoviCompatTrackOutput(
         length: Int,
         sampleDataPart: Int,
     ) {
-        if (state == State.INACTIVE || sampleDataPart != TrackOutput.SAMPLE_DATA_PART_MAIN) {
+        if (state == State.INACTIVE) {
+            delegate.sampleData(data, length, sampleDataPart)
+            return
+        }
+        if (sampleDataPart != TrackOutput.SAMPLE_DATA_PART_MAIN) {
+            giveUpOnPart(sampleDataPart)
             delegate.sampleData(data, length, sampleDataPart)
             return
         }
@@ -247,7 +293,7 @@ internal class DoviCompatTrackOutput(
             return
         }
         if (trailingBytes > 0) {
-            // Converting can move the tail of the access unit, so hold the bytes of the next one.
+            // Rewriting can move the tail of the access unit, so hold the bytes of the next one.
             if (trailing.size < trailingBytes) trailing = ByteArray(trailingBytes)
             read(size, trailing, trailingBytes)
         }
@@ -270,13 +316,14 @@ internal class DoviCompatTrackOutput(
         if (state == State.INACTIVE || samples == 0L) return
         Timber.i(
             "Dolby Vision profile 7 track finished as %s: codecs %s to %s, %d access units, " +
-                "%d RPUs converted, %d failed, %d enhancement layer bytes dropped, %d bytes in, %d bytes out",
+                "%d RPUs converted, %d RPUs dropped, %d enhancement layer bytes dropped, " +
+                "%d bytes in, %d bytes out",
             state,
             codecsBefore,
             codecsAfter,
             samples,
             rpusConverted,
-            rpusFailed,
+            rpusDropped,
             elBytesDropped,
             bytesIn,
             bytesOut,
@@ -284,7 +331,7 @@ internal class DoviCompatTrackOutput(
     }
 
     /**
-     * Converts the assembled access unit and leaves the result in [finished], returning its length.
+     * Rewrites the assembled access unit and leaves the result in [finished], returning its length.
      */
     private fun transform(size: Int): Int {
         if (state == State.UNDECIDED) decide(size)
@@ -296,17 +343,32 @@ internal class DoviCompatTrackOutput(
                 length = convertedSize
                 rpusConverted++
             } else {
-                rpusFailed++
-                if (rpusFailed == 1L) {
-                    Timber.w("libdovi could not convert an RPU, that access unit is left as it is")
-                }
+                rpusDropped++
             }
+            if (!conversionVerified) verifyConversion(length)
         }
         read(0, finishedOfAtLeast(length), length)
-        if (state == State.CONVERTING) {
-            val dropped = dropNalUnits(finished, length) { it == NAL_UNIT_TYPE_ENHANCEMENT_LAYER }
-            elBytesDropped += length - dropped
-            length = dropped
+        when (state) {
+            State.CONVERTING -> {
+                val kept = dropNalUnits(finished, length) { it == NAL_UNIT_TYPE_ENHANCEMENT_LAYER }
+                elBytesDropped += length - kept
+                length = kept
+            }
+
+            State.STRIPPING -> {
+                // A profile 7 RPU in a stream presented as profile 8.1, or as HEVC, is worse than
+                // no RPU at all, so both it and the enhancement layer go.
+                val kept =
+                    dropNalUnits(finished, length) {
+                        it == NAL_UNIT_TYPE_RPU || it == NAL_UNIT_TYPE_ENHANCEMENT_LAYER
+                    }
+                elBytesDropped += length - kept
+                length = kept
+            }
+
+            else -> {
+                Unit
+            }
         }
         return length
     }
@@ -360,6 +422,37 @@ internal class DoviCompatTrackOutput(
             }
     }
 
+    /**
+     * Checks that the first converted access unit really did come back as profile 8, since libdovi
+     * reports an RPU it could not convert by handing it back unchanged. Carrying on would leave a
+     * profile 7 RPU in a stream the decoder was told is profile 8.1, which is how a conversion
+     * fails while looking like it worked. Dropping the RPUs instead gives up the Dolby Vision
+     * metadata and keeps the HDR10 base layer, which is where playback started.
+     */
+    private fun verifyConversion(size: Int) {
+        conversionVerified = true
+        val info = converter?.frameInfo(sample, size)
+        if (info != null && info.profile == 7) {
+            Timber.e("libdovi left the RPU at profile 7, dropping the Dolby Vision metadata instead")
+            state = State.STRIPPING
+        }
+    }
+
+    /**
+     * Sample data which is not the access unit itself, such as supplemental or encryption data, has
+     * to keep its place relative to the bytes around it. Rather than guess at that framing, the
+     * track gives up on rewriting as soon as any turns up.
+     */
+    private fun giveUpOnPart(sampleDataPart: Int) {
+        if (state == State.INACTIVE) return
+        Timber.w(
+            "Sample data part %d on a Dolby Vision track, leaving the rest of the stream alone",
+            sampleDataPart,
+        )
+        flushBuffered()
+        state = State.INACTIVE
+    }
+
     private fun passThrough(
         timeUs: Long,
         flags: Int,
@@ -367,13 +460,16 @@ internal class DoviCompatTrackOutput(
         offset: Int,
         cryptoData: TrackOutput.CryptoData?,
     ) {
-        if (buffered > 0) {
-            read(0, finishedOfAtLeast(buffered), buffered)
-            finishedWrapper.reset(finished, buffered)
-            delegate.sampleData(finishedWrapper, buffered, TrackOutput.SAMPLE_DATA_PART_MAIN)
-            buffered = 0
-        }
+        flushBuffered()
         delegate.sampleMetadata(timeUs, flags, size, offset, cryptoData)
+    }
+
+    private fun flushBuffered() {
+        if (buffered <= 0) return
+        read(0, finishedOfAtLeast(buffered), buffered)
+        finishedWrapper.reset(finished, buffered)
+        delegate.sampleData(finishedWrapper, buffered, TrackOutput.SAMPLE_DATA_PART_MAIN)
+        buffered = 0
     }
 
     private fun finishedOfAtLeast(length: Int): ByteArray {

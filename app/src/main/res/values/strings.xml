@@ -487,8 +487,15 @@
     <string name="dts">DTS</string>
     <string name="force_dovi_profile_7">Direct play Dolby Vision Profile 7</string>
     <string name="force_dovi_profile_7_summary">Ignores device compatibility checks</string>
-    <string name="convert_dovi_profile_7">Convert Dolby Vision Profile 7 to 8.1</string>
-    <string name="convert_dovi_profile_7_summary">Converts profile 7 to profile 8.1 during playback so devices which only support single layer Dolby Vision play it as Dolby Vision instead of HDR10. Also stops the server transcoding profile 7. Leave off on devices which really do decode profile 7, such as the Nvidia Shield.</string>
+    <string name="dovi_conversion">Dolby Vision conversion</string>
+    <string name="dovi_conversion_native">Native / off</string>
+    <string name="dovi_conversion_native_summary">Play Profile 7 as it is</string>
+    <string name="dovi_conversion_auto">Automatic</string>
+    <string name="dovi_conversion_auto_summary">Choose from what the decoders and the display report</string>
+    <string name="dovi_conversion_profile_8_1">Profile 7 to 8.1</string>
+    <string name="dovi_conversion_profile_8_1_summary">Play Profile 7 as Dolby Vision on devices which only support single layer Dolby Vision</string>
+    <string name="dovi_conversion_hevc">Profile 7 to HEVC</string>
+    <string name="dovi_conversion_hevc_summary">Drop Dolby Vision and play the HDR10 base layer</string>
 
     <string name="discover">Discover</string>
     <string name="request">Request</string>
@@ -839,6 +846,19 @@
         <item>@string/ass_subtitle_mode_libass</item>
         <item>@string/ass_subtitle_mode_exoplayer</item>
         <item>@string/ass_subtitle_mode_transcode</item>
+    </array>
+    <!-- Order matches the DoviConversionMode enum -->
+    <array name="dovi_conversion_modes">
+        <item>@string/dovi_conversion_native</item>
+        <item>@string/dovi_conversion_auto</item>
+        <item>@string/dovi_conversion_profile_8_1</item>
+        <item>@string/dovi_conversion_hevc</item>
+    </array>
+    <array name="dovi_conversion_modes_summary">
+        <item>@string/dovi_conversion_native_summary</item>
+        <item>@string/dovi_conversion_auto_summary</item>
+        <item>@string/dovi_conversion_profile_8_1_summary</item>
+        <item>@string/dovi_conversion_hevc_summary</item>
     </array>
     <array name="ass_subtitle_modes_summary">
         <item>@string/default_track</item>

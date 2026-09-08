@@ -15,6 +15,20 @@ const val NAL_UNIT_TYPE_ENHANCEMENT_LAYER = 63
 private const val DOVI_PROFILE_8 = "08"
 
 /**
+ * What to do with a Dolby Vision profile 7 track during playback.
+ */
+enum class DoviPlaybackMode {
+    /** Leave the stream alone, for a device which really does decode profile 7. */
+    NATIVE,
+
+    /** Rewrite the RPU to profile 8.1 and drop the enhancement layer. */
+    CONVERT_TO_PROFILE_8_1,
+
+    /** Drop the RPU and the enhancement layer, leaving the HDR10 base layer as plain HEVC. */
+    STRIP_TO_HEVC,
+}
+
+/**
  * Rewrites a Dolby Vision profile 7 codec string into its profile 8 form, e.g. `dvhe.07.06` into
  * `dvhe.08.06`, and returns null for anything which is not profile 7.
  *
@@ -33,6 +47,9 @@ fun doviProfile7ToProfile8(codecs: String?): String? {
     return (listOf(parts[0], DOVI_PROFILE_8) + parts.subList(2, parts.size)).joinToString(".")
 }
 
+/** Whether [codecs] describes Dolby Vision profile 7. */
+fun isDoviProfile7(codecs: String?): Boolean = doviProfile7ToProfile8(codecs) != null
+
 /**
  * Calls [onNalUnit] once per Annex B NAL unit found in `data[0, size)`, with the bounds of the unit
  * including its start code, so that `[from, to)` covers every byte of the access unit exactly once.
@@ -40,6 +57,9 @@ fun doviProfile7ToProfile8(codecs: String?): String? {
  * Bytes ahead of the first start code, if any, are not reported. Emulation prevention makes a start
  * code impossible inside a payload, so a plain scan for `00 00 01` finds unit boundaries and nothing
  * else.
+ *
+ * Both extractors which matter here hand over Annex B: `Mp4Extractor` replaces the NAL length field
+ * of an MP4 sample with a start code, and `MatroskaExtractor` does the same.
  */
 inline fun forEachNalUnit(
     data: ByteArray,
