@@ -454,6 +454,17 @@ sealed interface AppPreference<Pref, T> {
                 summary = R.string.force_dovi_profile_7_summary,
             )
 
+        val ConvertDoviProfile7 =
+            AppSwitchPreference<AppPreferences>(
+                title = R.string.convert_dovi_profile_7,
+                defaultValue = false,
+                getter = { it.playbackPreferences.overrides.convertDolbyVisionProfile7 },
+                setter = { prefs, value ->
+                    prefs.updatePlaybackOverrides { convertDolbyVisionProfile7 = value }
+                },
+                summary = R.string.convert_dovi_profile_7_summary,
+            )
+
         val DecodeAv1 =
             AppSwitchPreference<AppPreferences>(
                 title = R.string.software_decoding_av1,
@@ -1171,6 +1182,7 @@ private val ExoPlayerSettings =
         AppPreference.AssSubtitleMode,
         AppPreference.DirectPlayPgs,
         AppPreference.DirectPlayDoviProfile7,
+        AppPreference.ConvertDoviProfile7,
         AppPreference.DecodeAv1,
     )
 

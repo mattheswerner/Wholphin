@@ -314,6 +314,8 @@ dependencies {
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.ui.compose)
     implementation(libs.ass.media)
+    // libdovi, for converting Dolby Vision profile 7 RPUs to profile 8.1
+    implementation(libs.exoplayer.hdr.utils)
 
     implementation(libs.coil.core)
     implementation(libs.coil.compose)

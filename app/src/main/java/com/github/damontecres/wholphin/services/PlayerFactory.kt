@@ -24,6 +24,7 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.session.MediaSession
 import com.github.damontecres.wholphin.mpv.MpvPlayer
 import com.github.damontecres.wholphin.preferences.AppPreferences
@@ -33,6 +34,9 @@ import com.github.damontecres.wholphin.preferences.PlayerBackend
 import com.github.damontecres.wholphin.preferences.get
 import com.github.damontecres.wholphin.services.hilt.AuthOkHttpClient
 import com.github.damontecres.wholphin.util.WholphinDispatchers
+import com.github.damontecres.wholphin.util.dovi.DolbyVisionCompatExtractorsFactory
+import com.github.damontecres.wholphin.util.dovi.LibDoviRpuConverter
+import com.github.damontecres.wholphin.util.profile.MediaCodecCapabilitiesTest
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.peerless2012.ass.media.AssHandler
 import io.github.peerless2012.ass.media.factory.AssRenderersFactory
@@ -59,6 +63,8 @@ class PlayerFactory
         @Volatile
         var currentPlayer: Player? = null
             private set
+
+        private val mediaCodecCapabilities by lazy { MediaCodecCapabilitiesTest(context) }
 
         suspend fun createVideoPlayer(
             backend: PlayerBackend,
@@ -89,6 +95,8 @@ class PlayerFactory
                         val useLibAss =
                             prefs.overrides.assPlaybackMode == AssPlaybackMode.ASS_LIBASS
                         val decodeAv1 = prefs.overrides.decodeAv1
+                        val convertDoviProfile7 =
+                            shouldConvertDoviProfile7(prefs.overrides.convertDolbyVisionProfile7)
                         Timber.v(
                             "extensions=%s, assPlaybackMode=%s",
                             extensions,
@@ -121,15 +129,16 @@ class PlayerFactory
                                 renderersFactory = AssRenderersFactory(assHandler, renderersFactory)
                                 DefaultMediaSourceFactory(
                                     dataSourceFactory,
-                                    extractorsFactory.withAssMkvSupport(
-                                        assSubtitleParserFactory,
-                                        assHandler,
-                                    ),
+                                    extractorsFactory
+                                        .withAssMkvSupport(
+                                            assSubtitleParserFactory,
+                                            assHandler,
+                                        ).withDoviProfile7Conversion(convertDoviProfile7),
                                 ).setSubtitleParserFactory(assSubtitleParserFactory)
                             } else {
                                 DefaultMediaSourceFactory(
                                     dataSourceFactory,
-                                    extractorsFactory,
+                                    extractorsFactory.withDoviProfile7Conversion(convertDoviProfile7),
                                 )
                             }
                         val disableAudioOffload =
@@ -214,6 +223,36 @@ class PlayerFactory
             DefaultExtractorsFactory()
                 .setConstantBitrateSeekingEnabled(true)
                 .setConstantBitrateSeekingAlwaysEnabled(true)
+
+        /**
+         * Whether Dolby Vision profile 7 should be converted to profile 8.1 during playback on this
+         * device: only when the user asked for it, the device cannot decode profile 7 itself, and it
+         * has a decoder for single layer Dolby Vision to convert for.
+         */
+        private fun shouldConvertDoviProfile7(enabled: Boolean): Boolean {
+            if (!enabled) return false
+            if (mediaCodecCapabilities.supportsHevcDolbyVisionEL()) {
+                Timber.i("Device decodes Dolby Vision profile 7 itself, not converting it")
+                return false
+            }
+            if (!mediaCodecCapabilities.supportsHevcDolbyVision()) {
+                Timber.i("Device has no single layer Dolby Vision decoder, not converting profile 7")
+                return false
+            }
+            Timber.i("Converting Dolby Vision profile 7 to profile 8.1 during playback")
+            return true
+        }
+
+        /**
+         * Wraps the factory so that profile 7 Dolby Vision is converted as it comes out of the
+         * extractor. The wrapper goes outermost, around the ASS support if that is in use.
+         */
+        private fun ExtractorsFactory.withDoviProfile7Conversion(enabled: Boolean): ExtractorsFactory =
+            if (enabled) {
+                DolbyVisionCompatExtractorsFactory(this) { LibDoviRpuConverter.createOrNull() }
+            } else {
+                this
+            }
 
         private fun createTrackSelector(
             tunneling: Boolean? = null,

@@ -41,6 +41,7 @@ tvprovider = "1.1.0"
 workRuntimeKtx = "2.11.2"
 paletteKtx = "1.0.0"
 libass-android = "0.5.1"
+exoplayer-hdr-utils = "0.4.1"
 kotlinxCoroutinesTest = "1.11.0"
 coreTesting = "2.2.0"
 openapi-generator = "7.24.0"
@@ -146,6 +147,7 @@ androidx-core-testing = { module = "androidx.arch.core:core-testing", version.re
 androidx-runner = { group = "androidx.test", name = "runner", version.ref = "runner" }
 
 ass-media = { group = "io.github.peerless2012", name = "ass-media", version.ref = "libass-android" }
+exoplayer-hdr-utils = { group = "com.suyashbelekar", name = "exoplayerhdrutils", version.ref = "exoplayer-hdr-utils" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }

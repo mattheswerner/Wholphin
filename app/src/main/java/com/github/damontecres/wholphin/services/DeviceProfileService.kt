@@ -62,6 +62,7 @@ class DeviceProfileService
                                 assDirectPlay = newConfig.overrides.assPlaybackMode != AssPlaybackMode.ASS_TRANSCODE,
                                 pgsDirectPlay = newConfig.overrides.directPlayPgs,
                                 dolbyVisionELDirectPlay = newConfig.overrides.directPlayDolbyVisionEL,
+                                doviProfile7Conversion = newConfig.overrides.convertDolbyVisionProfile7,
                                 decodeAv1 = prefs.overrides.decodeAv1,
                                 preferAc3ForSurround = appPrefs.experimentalPreferences.enabled { preferAc3Surround },
                                 jellyfinTenEleven = newConfig.jellyfinTenEleven,

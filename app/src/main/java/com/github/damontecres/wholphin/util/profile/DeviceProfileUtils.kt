@@ -69,6 +69,7 @@ fun createDeviceProfile(
     assDirectPlay: Boolean,
     pgsDirectPlay: Boolean,
     dolbyVisionELDirectPlay: Boolean,
+    doviProfile7Conversion: Boolean,
     decodeAv1: Boolean,
     jellyfinTenEleven: Boolean,
     preferAc3ForSurround: Boolean,
@@ -481,13 +482,17 @@ fun createDeviceProfile(
             }
         }
 
+    // Converting profile 7 to profile 8.1 during playback needs the profile 7 stream to arrive
+    // untranscoded, and is only any use on a device which decodes single layer Dolby Vision.
+    val allowProfile7 = dolbyVisionELDirectPlay || (doviProfile7Conversion && supportsHevcDolbyVision)
+
     // TODO Use VideoRangeType enum with Jellyfin 10.11 based SDK
     val unsupportedRangeTypesHevc =
         buildSet {
             if (jellyfinTenEleven) add("DOVIInvalid")
 
             if (!supportsHevcDolbyVisionEL) {
-                if (!dolbyVisionELDirectPlay) {
+                if (!allowProfile7) {
                     if (jellyfinTenEleven) {
                         add("DOVIWithEL")
                         if (!supportsHevcHDR10Plus && !KnownDefects.hevcDoviHdr10PlusBug) add("DOVIWithELHDR10Plus")
