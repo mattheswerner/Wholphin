@@ -14,6 +14,7 @@ import org.jellyfin.sdk.model.api.SubtitleDeliveryMethod
 import org.jellyfin.sdk.model.api.VideoRangeType
 import org.jellyfin.sdk.model.deviceprofile.DeviceProfileBuilder
 import org.jellyfin.sdk.model.deviceprofile.buildDeviceProfile
+import timber.log.Timber
 
 private val downmixSupportedAudioCodecs =
     arrayOf(
@@ -483,8 +484,10 @@ fun createDeviceProfile(
         }
 
     // Converting profile 7 to profile 8.1 during playback needs the profile 7 stream to arrive
-    // untranscoded, and is only any use on a device which decodes single layer Dolby Vision.
-    val allowProfile7 = dolbyVisionELDirectPlay || (doviProfile7Conversion && supportsHevcDolbyVision)
+    // untranscoded. Asking for the conversion is therefore also asking for the stream, whatever the
+    // device says about its Dolby Vision decoders, since those claims are what the conversion is
+    // there to work around.
+    val allowProfile7 = dolbyVisionELDirectPlay || doviProfile7Conversion
 
     // TODO Use VideoRangeType enum with Jellyfin 10.11 based SDK
     val unsupportedRangeTypesHevc =
@@ -548,6 +551,15 @@ fun createDeviceProfile(
     }
 
     // HEVC
+    Timber.i(
+        "Dolby Vision: profile 7 decoding=%s, single layer=%s, profile 7 direct play=%s, profile 7 conversion=%s, " +
+            "HEVC video ranges reported unsupported=%s",
+        supportsHevcDolbyVisionEL,
+        supportsHevcDolbyVision,
+        dolbyVisionELDirectPlay,
+        doviProfile7Conversion,
+        unsupportedRangeTypesHevc,
+    )
     if (unsupportedRangeTypesHevc.isNotEmpty()) {
         codecProfile {
             type = CodecType.VIDEO

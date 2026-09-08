@@ -488,7 +488,7 @@
     <string name="force_dovi_profile_7">Direct play Dolby Vision Profile 7</string>
     <string name="force_dovi_profile_7_summary">Ignores device compatibility checks</string>
     <string name="convert_dovi_profile_7">Convert Dolby Vision Profile 7 to 8.1</string>
-    <string name="convert_dovi_profile_7_summary">Converts profile 7 to profile 8.1 during playback so devices which only support single layer Dolby Vision play it as Dolby Vision instead of HDR10. Has no effect on devices which decode profile 7 themselves.</string>
+    <string name="convert_dovi_profile_7_summary">Converts profile 7 to profile 8.1 during playback so devices which only support single layer Dolby Vision play it as Dolby Vision instead of HDR10. Also stops the server transcoding profile 7. Leave off on devices which really do decode profile 7, such as the Nvidia Shield.</string>
 
     <string name="discover">Discover</string>
     <string name="request">Request</string>

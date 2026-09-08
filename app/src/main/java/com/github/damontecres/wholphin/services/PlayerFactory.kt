@@ -225,21 +225,22 @@ class PlayerFactory
                 .setConstantBitrateSeekingAlwaysEnabled(true)
 
         /**
-         * Whether Dolby Vision profile 7 should be converted to profile 8.1 during playback on this
-         * device: only when the user asked for it, the device cannot decode profile 7 itself, and it
-         * has a decoder for single layer Dolby Vision to convert for.
+         * Whether Dolby Vision profile 7 should be converted to profile 8.1 during playback.
+         *
+         * This follows the user's choice rather than what the device claims it can decode. A device
+         * which advertises profile 7 does not necessarily render the enhancement layer: several
+         * select a Dolby Vision decoder for a profile 7 stream and put out the HDR10 base layer,
+         * which is the very complaint the conversion exists to answer. What the device says is
+         * logged, since it is worth knowing when a conversion turns out to be unnecessary or
+         * impossible, but it does not overrule the setting.
          */
         private fun shouldConvertDoviProfile7(enabled: Boolean): Boolean {
             if (!enabled) return false
-            if (mediaCodecCapabilities.supportsHevcDolbyVisionEL()) {
-                Timber.i("Device decodes Dolby Vision profile 7 itself, not converting it")
-                return false
-            }
-            if (!mediaCodecCapabilities.supportsHevcDolbyVision()) {
-                Timber.i("Device has no single layer Dolby Vision decoder, not converting profile 7")
-                return false
-            }
-            Timber.i("Converting Dolby Vision profile 7 to profile 8.1 during playback")
+            Timber.i(
+                "Converting Dolby Vision profile 7 to 8.1: device reports profile 7 decoding=%s, single layer Dolby Vision=%s",
+                mediaCodecCapabilities.supportsHevcDolbyVisionEL(),
+                mediaCodecCapabilities.supportsHevcDolbyVision(),
+            )
             return true
         }
 
