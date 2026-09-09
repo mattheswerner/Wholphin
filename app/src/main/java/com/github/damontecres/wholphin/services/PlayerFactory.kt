@@ -262,11 +262,12 @@ class PlayerFactory
                 DolbyVisionCompatExtractorsFactory(
                     delegate = this,
                     mode = mode,
-                    createMatroskaExtractor = {
+                    subtitleParserFactory = subtitleParserFactory,
+                    createMatroskaExtractor = { parserFactory ->
                         if (assHandler != null) {
-                            DoviAssMatroskaExtractor(subtitleParserFactory, assHandler)
+                            DoviAssMatroskaExtractor(parserFactory, assHandler)
                         } else {
-                            DoviMatroskaExtractor(subtitleParserFactory)
+                            DoviMatroskaExtractor(parserFactory)
                         }
                     },
                 ) { LibDoviRpuConverter.createOrNull() }

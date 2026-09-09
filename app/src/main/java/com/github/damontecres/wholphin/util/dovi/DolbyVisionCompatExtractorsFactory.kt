@@ -18,6 +18,7 @@ import androidx.media3.extractor.ForwardingExtractorOutput
 import androidx.media3.extractor.ForwardingExtractorsFactory
 import androidx.media3.extractor.TrackOutput
 import androidx.media3.extractor.mkv.MatroskaExtractor
+import androidx.media3.extractor.text.SubtitleParser
 import timber.log.Timber
 import java.io.EOFException
 import java.nio.ByteBuffer
@@ -59,9 +60,22 @@ private const val CONVERSION_HEADROOM = 16 * 1024
 class DolbyVisionCompatExtractorsFactory(
     delegate: ExtractorsFactory,
     private val mode: DoviPlaybackMode,
-    private val createMatroskaExtractor: (() -> Extractor)?,
+    subtitleParserFactory: SubtitleParser.Factory,
+    private val createMatroskaExtractor: ((SubtitleParser.Factory) -> Extractor)?,
     private val createConverter: () -> DoviRpuConverter?,
 ) : ForwardingExtractorsFactory(delegate) {
+    /**
+     * The subtitle parser factory the replacement Matroska extractor is built with. The media
+     * source factory can hand the extractors factory a different one after this is constructed, so
+     * the latest is what counts.
+     */
+    private var subtitleParserFactory: SubtitleParser.Factory = subtitleParserFactory
+
+    override fun setSubtitleParserFactory(subtitleParserFactory: SubtitleParser.Factory): ExtractorsFactory {
+        this.subtitleParserFactory = subtitleParserFactory
+        return super.setSubtitleParserFactory(subtitleParserFactory)
+    }
+
     override fun createExtractors(): Array<Extractor> = wrap(super.createExtractors())
 
     override fun createExtractors(
@@ -76,7 +90,11 @@ class DolbyVisionCompatExtractorsFactory(
             // only a subclass can get at. The replacement keeps its place in the sniffing order.
             val extractor = extractors[it]
             val replacement =
-                if (extractor is MatroskaExtractor) createMatroskaExtractor?.invoke() else null
+                if (extractor is MatroskaExtractor) {
+                    createMatroskaExtractor?.invoke(subtitleParserFactory)
+                } else {
+                    null
+                }
             DoviCompatExtractor(replacement ?: extractor, mode, createConverter)
         }
 }
@@ -207,6 +225,9 @@ internal class DoviCompatTrackOutput(
 
     /** Whether the RPU arrives in block additions and has to be put into the access unit. */
     private var injectRpu = false
+
+    /** Whether the first decision has already been taken again after a block addition turned up. */
+    private var redecided = false
 
     private var codecsBefore: String? = null
     private var codecsAfter: String? = null
@@ -365,6 +386,12 @@ internal class DoviCompatTrackOutput(
         if (pendingRpu.size < rpu.length) pendingRpu = ByteArray(rpu.length)
         System.arraycopy(data, rpu.offset, pendingRpu, 0, rpu.length)
         pendingRpuLength = rpu.length
+        if (state == State.PASSTHROUGH && !redecided) {
+            // The first access unit had no RPU in it and none had arrived alongside it yet. One has
+            // now, so the decision is worth taking again rather than leaving the whole film alone.
+            redecided = true
+            state = State.UNDECIDED
+        }
     }
 
     fun onSeek() {
@@ -590,8 +617,12 @@ internal class DoviCompatTrackOutput(
         buffered = 0
     }
 
+    /**
+     * Grows the finished access unit buffer, keeping what is already in it, because appending an
+     * RPU from a block addition asks for room after the access unit has been written.
+     */
     private fun finishedOfAtLeast(length: Int): ByteArray {
-        if (finished.size < length) finished = ByteArray(length + length / 2)
+        if (finished.size < length) finished = finished.copyOf(length + length / 2)
         return finished
     }
 

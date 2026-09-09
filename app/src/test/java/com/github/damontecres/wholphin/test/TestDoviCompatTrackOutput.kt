@@ -257,6 +257,25 @@ class TestDoviCompatTrackOutput {
     }
 
     @Test
+    fun anAccessUnitNearTheBufferSizeSurvivesTheRpuBeingAppended() {
+        val delegate = RecordingTrackOutput()
+        val output = converting(delegate, FakeRpuConverter(profile7Info))
+
+        output.format(doviFormat("dvhe.07.06"))
+        val rpu = byteArrayOf(((NAL_UNIT_TYPE_RPU shl 1) and 0x7E).toByte(), 0x01, 0x25)
+        val blockAddition = byteArrayOf(0, 0, 0, rpu.size.toByte()) + rpu
+        output.onBlockAdditional(4, blockAddition, blockAddition.size)
+
+        // Sized so that the access unit still fits the buffer the finished one starts out with and
+        // only appending the RPU grows it: 6 bytes of framing plus the payload lands at 524286 of
+        // 524288, and the 7 byte RPU tips it over. A 4K remux reaches this size readily.
+        val sample = nalUnit(19, ByteArray(524280) { (it and 0xFF).toByte() })
+        writeSample(output, sample)
+
+        Assert.assertArrayEquals(sample + byteArrayOf(0, 0, 0, 1) + rpu, delegate.samples.single())
+    }
+
+    @Test
     fun anAccessUnitWithNoRpuIsLeftAsItIs() {
         val delegate = RecordingTrackOutput()
         val converter = FakeRpuConverter(profile7Info)
