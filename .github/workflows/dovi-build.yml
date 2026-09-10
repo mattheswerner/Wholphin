@@ -26,6 +26,12 @@ jobs:
           fetch-depth: 0 # Need the tags to build
       - name: Setup
         uses: ./.github/actions/setup
+      - name: Use a fixed debug signing key
+        # A runner has no debug keystore, so Gradle makes a new one every build and every APK ends
+        # up signed by a different key, which Android refuses to install over the one before it.
+        run: |
+          mkdir -p "${GRADLE_USER_HOME:-$HOME/.gradle}"
+          cp .github/keystore/debug.keystore "${GRADLE_USER_HOME:-$HOME/.gradle}/debug.keystore"
       - name: Build app
         run: |
           ./gradlew clean assembleDefaultDebug testDefaultDebugUnitTest --no-daemon
