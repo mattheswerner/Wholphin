@@ -55,6 +55,7 @@ jobs:
             echo "::error::The APK is not signed with .github/keystore/debug.keystore, so it will not install over the last build"
             exit 1
           fi
+          "$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS_VERSION/aapt2" dump packagename "$apk"
       - name: Upload APKs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

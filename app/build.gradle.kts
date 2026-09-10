@@ -128,7 +128,11 @@ configure<ApplicationExtension> {
             isMinifyEnabled = false
             isShrinkResources = false
             isDebuggable = true
-            applicationIdSuffix = ".debug"
+            // Test scaffolding of this branch: its own application id, so a build of it never
+            // collides with an installed .debug build signed by some other key, and its own name in
+            // app/src/debug/res so the two are told apart in a launcher. Revert to ".debug" with
+            // the rest of the scaffolding.
+            applicationIdSuffix = ".dovitest"
         }
     }
     flavorDimensions += "version"

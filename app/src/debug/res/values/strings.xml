@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name" translatable="false">Wholphin (Debug)</string>
+    <!-- Named for this branch so a test build of it is not mistaken for a plain debug build.
+         Test scaffolding: back to "Wholphin (Debug)" with the rest of it. -->
+    <string name="app_name" translatable="false">Wholphin DV Test</string>
 </resources>
