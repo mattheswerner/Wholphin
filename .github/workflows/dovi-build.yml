@@ -29,17 +29,32 @@ jobs:
       - name: Use a fixed debug signing key
         # A runner has no debug keystore, so Gradle makes a new one every build and every APK ends
         # up signed by a different key, which Android refuses to install over the one before it.
-        # The debug keystore lives in ~/.android, not in the Gradle home.
+        # Where the tools look for it depends on ANDROID_USER_HOME, so that is set here rather than
+        # guessed at, and the keystore is put in every place the lookup can land.
         run: |
-          mkdir -p "${ANDROID_SDK_HOME:-$HOME}/.android"
-          cp .github/keystore/debug.keystore "${ANDROID_SDK_HOME:-$HOME}/.android/debug.keystore"
-      - name: Show which key signs the build
-        run: |
-          keytool -list -v -keystore "${ANDROID_SDK_HOME:-$HOME}/.android/debug.keystore" \
-            -storepass android | grep -E "Alias name|Owner|SHA-256"
+          echo "ANDROID_USER_HOME=$HOME/.android" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.android"
+          cp .github/keystore/debug.keystore "$HOME/.android/debug.keystore"
+          if [ -n "${ANDROID_SDK_HOME:-}" ]; then
+            mkdir -p "$ANDROID_SDK_HOME/.android"
+            cp .github/keystore/debug.keystore "$ANDROID_SDK_HOME/.android/debug.keystore"
+          fi
       - name: Build app
         run: |
           ./gradlew clean assembleDefaultDebug testDefaultDebugUnitTest --no-daemon
+      - name: Check the APK carries the fixed key
+        # Whether the key was picked up is only visible in the finished APK, so it is checked there
+        # rather than assumed from having put the keystore in place.
+        run: |
+          apksigner="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS_VERSION/apksigner"
+          apk=$(find app/build/outputs/apk -name '*arm64-v8a.apk' | head -1)
+          echo "Checking $apk"
+          "$apksigner" verify --print-certs "$apk" | tee signer.txt
+          expected=ad2af4dc0ab8491833ffd9c32632db8a9faa351b5895edef34b662089cbe1ce1
+          if ! grep -qi "$expected" signer.txt; then
+            echo "::error::The APK is not signed with .github/keystore/debug.keystore, so it will not install over the last build"
+            exit 1
+          fi
       - name: Upload APKs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
