@@ -29,9 +29,14 @@ jobs:
       - name: Use a fixed debug signing key
         # A runner has no debug keystore, so Gradle makes a new one every build and every APK ends
         # up signed by a different key, which Android refuses to install over the one before it.
+        # The debug keystore lives in ~/.android, not in the Gradle home.
         run: |
-          mkdir -p "${GRADLE_USER_HOME:-$HOME/.gradle}"
-          cp .github/keystore/debug.keystore "${GRADLE_USER_HOME:-$HOME/.gradle}/debug.keystore"
+          mkdir -p "${ANDROID_SDK_HOME:-$HOME}/.android"
+          cp .github/keystore/debug.keystore "${ANDROID_SDK_HOME:-$HOME}/.android/debug.keystore"
+      - name: Show which key signs the build
+        run: |
+          keytool -list -v -keystore "${ANDROID_SDK_HOME:-$HOME}/.android/debug.keystore" \
+            -storepass android | grep -E "Alias name|Owner|SHA-256"
       - name: Build app
         run: |
           ./gradlew clean assembleDefaultDebug testDefaultDebugUnitTest --no-daemon
