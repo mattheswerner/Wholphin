@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -37,6 +38,7 @@ import com.github.damontecres.wholphin.util.TrackSupport
 import com.github.damontecres.wholphin.util.TrackSupportReason
 import com.github.damontecres.wholphin.util.TrackType
 import com.github.damontecres.wholphin.util.WholphinDispatchers
+import com.github.damontecres.wholphin.util.dovi.DoviConversionStatus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -104,6 +106,8 @@ fun PlaybackDebugOverlay(
         }
     }
 
+    val doviStatus by DoviConversionStatus.summary.collectAsState()
+
     Column(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = modifier,
@@ -114,7 +118,7 @@ fun PlaybackDebugOverlay(
         ) {
             ProvideTextStyle(textStyle) {
                 SimpleTable(
-                    remember(currentPlayback, displayMode) {
+                    remember(currentPlayback, displayMode, doviStatus) {
                         buildList {
                             add("Backend:" to currentPlayback?.backend?.toString())
                             add("Play method:" to currentPlayback?.playMethod?.serialName)
@@ -123,6 +127,7 @@ fun PlaybackDebugOverlay(
                                 add("Audio Decoder:" to (currentPlayback.audioDecoder ?: "Non-ExoPlayer"))
                             }
                             add("Display Mode: " to displayMode)
+                            doviStatus?.let { add("Dolby Vision:" to it) }
                         }
                     },
                     modifier = Modifier.weight(1f, fill = false),

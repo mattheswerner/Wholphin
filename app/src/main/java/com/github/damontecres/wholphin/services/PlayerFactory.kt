@@ -38,6 +38,7 @@ import com.github.damontecres.wholphin.services.hilt.AuthOkHttpClient
 import com.github.damontecres.wholphin.util.WholphinDispatchers
 import com.github.damontecres.wholphin.util.dovi.DolbyVisionCompatExtractorsFactory
 import com.github.damontecres.wholphin.util.dovi.DoviAssMatroskaExtractor
+import com.github.damontecres.wholphin.util.dovi.DoviConversionStatus
 import com.github.damontecres.wholphin.util.dovi.DoviMatroskaExtractor
 import com.github.damontecres.wholphin.util.dovi.DoviPlaybackMode
 import com.github.damontecres.wholphin.util.dovi.LibDoviRpuConverter
@@ -107,6 +108,12 @@ class PlayerFactory
                                 context = context,
                                 mediaTest = mediaCodecCapabilities,
                             )
+                        DoviConversionStatus.set(
+                            when (doviMode) {
+                                DoviPlaybackMode.NATIVE -> null
+                                else -> "$doviMode, waiting for a video track"
+                            },
+                        )
                         Timber.v(
                             "extensions=%s, assPlaybackMode=%s",
                             extensions,

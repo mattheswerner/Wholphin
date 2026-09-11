@@ -29,6 +29,9 @@ private const val TRANSFER_SIZE = 64 * 1024
 /** The Annex B start code the extractors frame every NAL unit with. */
 private val NAL_START_CODE = byteArrayOf(0, 0, 0, 1)
 
+/** How often the running count reaches the debug overlay, in access units. */
+private const val PROGRESS_EVERY = 500L
+
 /**
  * Spare room for libdovi to work in: a converted RPU can come out a few bytes longer than the one
  * it replaces, and it is written into the access unit in place.
@@ -249,6 +252,9 @@ internal class DoviCompatTrackOutput(
             }
         if (profile8Codecs == null) {
             state = State.INACTIVE
+            if (format.sampleMimeType?.startsWith("video/") == true) {
+                DoviConversionStatus.set("no profile 7 track, arrived as ${format.codecs ?: format.sampleMimeType}")
+            }
             delegate.format(format)
             return
         }
@@ -259,6 +265,7 @@ internal class DoviCompatTrackOutput(
                 // Dropping the Dolby Vision layer needs no RPU parsing, so no native library either
                 state = State.STRIPPING
                 codecsAfter = null
+                DoviConversionStatus.set("stripping profile 7 to plain HEVC")
                 Timber.i("Dolby Vision profile 7 video track, stripping it to plain HEVC")
                 delegate.format(
                     format
@@ -365,6 +372,11 @@ internal class DoviCompatTrackOutput(
         bytesIn += size
         val length = transform(size)
         bytesOut += length
+        if (samples % PROGRESS_EVERY == 0L && state == State.CONVERTING) {
+            DoviConversionStatus.set(
+                "converting to 8.1, RPU from $rpuSource, $rpusConverted converted, $rpusDropped dropped",
+            )
+        }
         finishedWrapper.reset(finished, length)
         delegate.sampleData(finishedWrapper, length, TrackOutput.SAMPLE_DATA_PART_MAIN)
         delegate.sampleMetadata(timeUs, flags, length, 0, cryptoData)
@@ -476,6 +488,7 @@ internal class DoviCompatTrackOutput(
         state =
             when {
                 !inBand && pendingRpuLength == 0 -> {
+                    DoviConversionStatus.set("not converted, no RPU found (NAL units ${describeNalUnitCounts(counts)})")
                     Timber.e(
                         "No Dolby Vision RPU in the first access unit and none in a block addition, " +
                             "NAL units %s, so the video is left unconverted",
@@ -485,6 +498,7 @@ internal class DoviCompatTrackOutput(
                 }
 
                 info == null -> {
+                    DoviConversionStatus.set("not converted, the RPU could not be parsed")
                     Timber.e(
                         "The Dolby Vision RPU of the first access unit could not be parsed, NAL units %s, " +
                             "so the video is left unconverted",
@@ -494,6 +508,7 @@ internal class DoviCompatTrackOutput(
                 }
 
                 info.profile != 7 -> {
+                    DoviConversionStatus.set("not converted, the RPU says profile ${info.profile}")
                     Timber.w(
                         "The container declares Dolby Vision profile 7 but the RPU says profile %d, " +
                             "so the video is left unconverted",
@@ -504,6 +519,7 @@ internal class DoviCompatTrackOutput(
 
                 else -> {
                     rpuSource = if (inBand) "in band" else "block additions"
+                    DoviConversionStatus.set("converting to 8.1, ${info.elType} RPU from $rpuSource")
                     Timber.i(
                         "Converting Dolby Vision profile 7 %s to profile 8.1, RPU from %s, " +
                             "first access unit NAL units %s",
