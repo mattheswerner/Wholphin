@@ -454,6 +454,26 @@ sealed interface AppPreference<Pref, T> {
                 summary = R.string.force_dovi_profile_7_summary,
             )
 
+        val DoviConversion =
+            AppChoicePreference<AppPreferences, DoviConversionMode>(
+                title = R.string.dovi_conversion,
+                defaultValue = DoviConversionMode.DOVI_CONVERSION_NATIVE,
+                getter = { it.playbackPreferences.overrides.doviConversionMode },
+                setter = { prefs, value ->
+                    prefs.updatePlaybackOverrides { doviConversionMode = value }
+                },
+                displayValues = R.array.dovi_conversion_modes,
+                subtitles = R.array.dovi_conversion_modes_summary,
+                indexToValue = { DoviConversionMode.forNumber(it) },
+                valueToIndex = {
+                    if (it != DoviConversionMode.UNRECOGNIZED) {
+                        it.number
+                    } else {
+                        DoviConversionMode.DOVI_CONVERSION_NATIVE.number
+                    }
+                },
+            )
+
         val DecodeAv1 =
             AppSwitchPreference<AppPreferences>(
                 title = R.string.software_decoding_av1,
@@ -1171,6 +1191,7 @@ private val ExoPlayerSettings =
         AppPreference.AssSubtitleMode,
         AppPreference.DirectPlayPgs,
         AppPreference.DirectPlayDoviProfile7,
+        AppPreference.DoviConversion,
         AppPreference.DecodeAv1,
     )
 

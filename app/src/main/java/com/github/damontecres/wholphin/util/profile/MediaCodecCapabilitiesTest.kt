@@ -304,6 +304,34 @@ class MediaCodecCapabilitiesTest(
         return false
     }
 
+    /**
+     * The Dolby Vision profiles each decoder advertises, by decoder name.
+     *
+     * Which profile a decoder claims is usually the only thing which explains why a Dolby Vision
+     * file plays the way it does on a given box, and it is not otherwise visible from the device,
+     * so it is worth having in a log.
+     */
+    fun dolbyVisionDecoderProfiles(): Map<String, List<Int>> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return emptyMap()
+        return buildMap {
+            for (info in mediaCodecList.codecInfos) {
+                if (info.isEncoder) continue
+                val supportsDolbyVision =
+                    info.supportedTypes.any {
+                        it.equals(MediaFormat.MIMETYPE_VIDEO_DOLBY_VISION, ignoreCase = true)
+                    }
+                if (!supportsDolbyVision) continue
+                try {
+                    val capabilities =
+                        info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_DOLBY_VISION)
+                    put(info.name, capabilities.profileLevels.map { it.profile }.distinct())
+                } catch (ex: IllegalArgumentException) {
+                    Timber.w(ex, "Could not read the Dolby Vision capabilities of %s", info.name)
+                }
+            }
+        }
+    }
+
     private fun hasCodecForMime(mime: String): Boolean {
         for (info in mediaCodecList.codecInfos) {
             if (info.isEncoder) continue
